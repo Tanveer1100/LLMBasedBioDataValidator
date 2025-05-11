@@ -1,65 +1,70 @@
-# ---- Step 1: Install necessary packages (skip if already installed) ----
-if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-BiocManager::install(c("ArrayExpress", "affy", "hgu219.db", "WGCNA", "readr", "writexl"), ask = FALSE, update = FALSE)
+# --------- STEP 0: Setup working directory ---------
+dir.create("/home/ec2-user/SageMaker/E-MTAB-3610", recursive = TRUE, showWarnings = FALSE)
+setwd("/home/ec2-user/SageMaker/E-MTAB-3610")
 
-# ---- Step 2: Load packages ----
-library(ArrayExpress)
-library(affy)
-library(readr)
-library(hgu219.db)
-library(WGCNA)
-library(writexl)
+# --------- STEP 1: Download all CEL zip files manually ---------
+for (i in 1:25) {
+  url <- sprintf("ftp://ftp.ebi.ac.uk/pub/databases/microarray/data/experiment/MTAB/E-MTAB-3610/E-MTAB-3610.raw.%d.zip", i)
+  dest <- sprintf("E-MTAB-3610.raw.%d.zip", i)
+  download.file(url, destfile = dest, mode = "wb")
+}
 
-# ---- Step 3: Download and unzip CEL files ----
-getAE(accession = "E-MTAB-3610")
+# --------- STEP 2: Unzip all zip files ---------
 for (f in list.files(pattern = "zip")) {
   unzip(f, junkpaths = TRUE)
 }
 
-# ---- Step 4: Normalize and get expression matrix ----
-arrays <- read.affybatch(filenames = list.files(pattern = "cel"))
+# --------- STEP 3: Install and load required R packages ---------
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+
+BiocManager::install(c("affy", "hgu219.db", "WGCNA", "readr", "writexl"), ask = FALSE, update = FALSE)
+
+library(affy)
+library(hgu219.db)
+library(WGCNA)
+library(readr)
+library(writexl)
+
+# --------- STEP 4: Normalize CEL files ---------
+arrays <- read.affybatch(filenames = list.files(pattern = "cel", ignore.case = TRUE))
 eset <- rma(arrays)
 mtx <- exprs(eset)
-colnames(mtx) <- sub(pattern = ".cel", "", colnames(mtx), fixed = TRUE)
+colnames(mtx) <- sub(".cel", "", colnames(mtx), fixed = TRUE)
 
-# ---- Step 5: Load sample annotations ----
+# --------- STEP 5: Download and load sample annotations ---------
+download.file("ftp://ftp.ebi.ac.uk/pub/databases/microarray/data/experiment/MTAB/E-MTAB-3610/E-MTAB-3610.sdrf.txt", "E-MTAB-3610.sdrf.txt")
 sample_annotations <- read_tsv("E-MTAB-3610.sdrf.txt")
+
 common_colnames <- intersect(colnames(mtx), sample_annotations$`Assay Name`)
-mtx <- mtx[, colnames(mtx) %in% common_colnames]
+mtx <- mtx[, common_colnames]
 sample_annotations <- sample_annotations[sample_annotations$`Assay Name` %in% common_colnames, ]
 sample_annotations <- sample_annotations[match(colnames(mtx), sample_annotations$`Assay Name`), ]
 stopifnot(all.equal(colnames(mtx), sample_annotations$`Assay Name`))
 
-# ---- Step 6: Annotate probes with gene names ----
+# --------- STEP 6: Map probes to gene symbols ---------
 k <- keys(hgu219.db, keytype = "PROBEID")
 gene_annotations <- select(hgu219.db, keys = k, columns = c("SYMBOL", "GENENAME"), keytype = "PROBEID")
+
 common_genes <- intersect(rownames(mtx), gene_annotations$PROBEID)
-mtx <- mtx[rownames(mtx) %in% common_genes, ]
-gene_annotations <- gene_annotations[gene_annotations$PROBEID %in% common_genes, ]
-gene_annotations <- gene_annotations[match(rownames(mtx), gene_annotations$PROBEID), ]
+mtx <- mtx[common_genes, ]
+gene_annotations <- gene_annotations[match(common_genes, gene_annotations$PROBEID), ]
 stopifnot(all.equal(rownames(mtx), gene_annotations$PROBEID))
 
-# ---- Step 7: Collapse probes to gene level ----
+# --------- STEP 7: Collapse probes to gene-level expression ---------
 collapsed <- collapseRows(datET = mtx, rowGroup = gene_annotations$SYMBOL, rowID = rownames(mtx))
 mtx_collapsed <- collapsed$datETcollapsed
 colnames(mtx_collapsed) <- sample_annotations$`Characteristics[cell line]`
 
-# ---- Step 8: Save data locally ----
-mtx <- data.frame(PROBEID = rownames(mtx), mtx)
-mtx_collapsed <- data.frame(GENE = rownames(mtx_collapsed), mtx_collapsed)
-
-write_csv(mtx_collapsed, "E-MTAB-3610_matrix.csv")
+# --------- STEP 8: Save output locally ---------
+write_csv(data.frame(GENE = rownames(mtx_collapsed), mtx_collapsed), "E-MTAB-3610_matrix.csv")
 write_csv(sample_annotations, "E-MTAB-3610_cell_annotations.csv")
+write_xlsx(list(Summarized = mtx_collapsed, Samples = sample_annotations, Original = mtx, Genes = gene_annotations),
+           "E-MTAB-3610_processed.xlsx")
 
-# Write Excel
-x <- list(Summarized = mtx_collapsed, Samples = sample_annotations, Original = mtx, Genes = gene_annotations)
-write_xlsx(x, "E-MTAB-3610_processed.xlsx")
+# --------- STEP 9: Upload to S3 (set your bucket name) ---------
+bucket <- "your-s3-bucket-name"   # <== REPLACE THIS
+folder <- "gdsc/E-MTAB-3610/"
 
-# ---- Step 9: Upload files to S3 ----
-# Set your bucket and folder path
-bucket_name <- "your-s3-bucket-name"
-folder_path <- "gdsc/E-MTAB-3610/"
-
-system(paste0("aws s3 cp E-MTAB-3610_matrix.csv s3://", bucket_name, "/", folder_path))
-system(paste0("aws s3 cp E-MTAB-3610_cell_annotations.csv s3://", bucket_name, "/", folder_path))
-system(paste0("aws s3 cp E-MTAB-3610_processed.xlsx s3://", bucket_name, "/", folder_path))
+system(paste0("aws s3 cp E-MTAB-3610_matrix.csv s3://", bucket, "/", folder))
+system(paste0("aws s3 cp E-MTAB-3610_cell_annotations.csv s3://", bucket, "/", folder))
+system(paste0("aws s3 cp E-MTAB-3610_processed.xlsx s3://", bucket, "/", folder))

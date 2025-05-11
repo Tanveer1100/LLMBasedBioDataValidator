@@ -48,4 +48,26 @@ mtx <- do.call(cbind, all_exprs)
 colnames(mtx) <- sub(".cel", "", colnames(mtx), fixed = TRUE)
 
 # -------- STEP 6: Download and Match Sample Annotations --------
-download.file("ftp://ftp.
+download.file("ftp://ftp.ebi.ac.uk/pub/databases/microarray/data/experiment/MTAB/E-MTAB-3610/E-MTAB-3610.sdrf.txt", "E-MTAB-3610.sdrf.txt")
+sample_annotations <- read_tsv("E-MTAB-3610.sdrf.txt")
+
+common_colnames <- intersect(colnames(mtx), sample_annotations$`Assay Name`)
+mtx <- mtx[, common_colnames]
+sample_annotations <- sample_annotations[sample_annotations$`Assay Name` %in% common_colnames, ]
+sample_annotations <- sample_annotations[match(colnames(mtx), sample_annotations$`Assay Name`), ]
+stopifnot(all.equal(colnames(mtx), sample_annotations$`Assay Name`))
+
+# -------- STEP 7: Save Results --------
+write_csv(data.frame(PROBEID = rownames(mtx), mtx), "E-MTAB-3610_matrix_probe.csv")
+write_csv(sample_annotations, "E-MTAB-3610_cell_annotations.csv")
+
+# Optional: save Excel
+write_xlsx(list(ProbeMatrix = mtx, Samples = sample_annotations), "E-MTAB-3610_probe_data.xlsx")
+
+# -------- STEP 8: Upload to S3 --------
+bucket <- "your-s3-bucket-name"  # REPLACE THIS
+folder <- "gdsc/E-MTAB-3610/"
+
+system(paste0("aws s3 cp E-MTAB-3610_matrix_probe.csv s3://", bucket, "/", folder))
+system(paste0("aws s3 cp E-MTAB-3610_cell_annotations.csv s3://", bucket, "/", folder))
+system(paste0("aws s3 cp E-MTAB-3610_probe_data.xlsx s3://", bucket, "/", folder))

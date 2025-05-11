@@ -17,7 +17,7 @@ for (f in list.files(pattern = "zip")) {
 # -------- STEP 3: Install Required Packages --------
 if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
 
-BiocManager::install(c("affy", "hgu219.db", "readr", "writexl"), ask = FALSE, update = FALSE)
+BiocManager::install(c("affy", "hgu219.db", "readr", "writexl"), ask = FALSE, update = FALSE, force= TRUE )
 
 library(affy)
 library(hgu219.db)

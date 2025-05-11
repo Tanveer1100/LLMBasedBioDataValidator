@@ -16,38 +16,47 @@ for (f in list.files(pattern = "zip")) {
 
 # -------- STEP 3: Install Required Packages --------
 if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-
-BiocManager::install(c("affy", "hgu219.db", "readr", "writexl"), ask = FALSE, update = FALSE, force= TRUE )
+BiocManager::install(c("affy", "readr", "writexl", "hgu219.db"), ask = FALSE, update = FALSE)
 
 library(affy)
-library(hgu219.db)
 library(readr)
 library(writexl)
+library(hgu219.db)
 
-# -------- STEP 4: Limit threads to avoid pthread errors --------
+# -------- STEP 4: Limit threads to avoid errors --------
 options(mc.cores = 1)
-Sys.setenv(OMP_NUM_THREADS = "1")
-Sys.setenv(OPENBLAS_NUM_THREADS = "1")
-Sys.setenv(MKL_NUM_THREADS = "1")
+Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1")
 
 # -------- STEP 5: Normalize CEL files in safe batches --------
 cel_files <- list.files(pattern = "cel", ignore.case = TRUE)
-batch_size <- 300
-all_exprs <- list()
+batch_size <- 100
+all_batches <- list()
 
 for (i in seq(1, length(cel_files), by = batch_size)) {
-  message(sprintf("Processing CEL files %d to %d", i, min(i + batch_size - 1, length(cel_files))))
+  message(sprintf("🟢 Processing CEL files %d to %d", i, min(i + batch_size - 1, length(cel_files))))
+  
   batch_files <- cel_files[i:min(i + batch_size - 1, length(cel_files))]
-  arrays <- read.affybatch(filenames = batch_files)
-  eset <- rma(arrays)
-  all_exprs[[length(all_exprs) + 1]] <- exprs(eset)
+  
+  tryCatch({
+    arrays <- read.affybatch(filenames = batch_files)
+    eset <- rma(arrays)
+    expr_matrix <- exprs(eset)
+    all_batches[[length(all_batches) + 1]] <- expr_matrix
+    
+    # Save intermediate batch to disk
+    write_csv(data.frame(PROBEID = rownames(expr_matrix), expr_matrix),
+              sprintf("E-MTAB-3610_batch_%03d.csv", i))
+    
+  }, error = function(e) {
+    message(sprintf("❌ Batch %d–%d failed: %s", i, i + batch_size - 1, e$message))
+  })
 }
 
-# Merge all batches
-mtx <- do.call(cbind, all_exprs)
+# -------- STEP 6: Merge all batches into full matrix --------
+mtx <- do.call(cbind, all_batches)
 colnames(mtx) <- sub(".cel", "", colnames(mtx), fixed = TRUE)
 
-# -------- STEP 6: Download and Match Sample Annotations --------
+# -------- STEP 7: Download and apply sample annotations --------
 download.file("ftp://ftp.ebi.ac.uk/pub/databases/microarray/data/experiment/MTAB/E-MTAB-3610/E-MTAB-3610.sdrf.txt", "E-MTAB-3610.sdrf.txt")
 sample_annotations <- read_tsv("E-MTAB-3610.sdrf.txt")
 
@@ -57,15 +66,13 @@ sample_annotations <- sample_annotations[sample_annotations$`Assay Name` %in% co
 sample_annotations <- sample_annotations[match(colnames(mtx), sample_annotations$`Assay Name`), ]
 stopifnot(all.equal(colnames(mtx), sample_annotations$`Assay Name`))
 
-# -------- STEP 7: Save Results --------
+# -------- STEP 8: Save Final Outputs --------
 write_csv(data.frame(PROBEID = rownames(mtx), mtx), "E-MTAB-3610_matrix_probe.csv")
 write_csv(sample_annotations, "E-MTAB-3610_cell_annotations.csv")
-
-# Optional: save Excel
 write_xlsx(list(ProbeMatrix = mtx, Samples = sample_annotations), "E-MTAB-3610_probe_data.xlsx")
 
-# -------- STEP 8: Upload to S3 --------
-bucket <- "your-s3-bucket-name"  # REPLACE THIS
+# -------- STEP 9: Upload to S3 --------
+bucket <- "your-s3-bucket-name"  # 🔁 REPLACE this with your bucket
 folder <- "gdsc/E-MTAB-3610/"
 
 system(paste0("aws s3 cp E-MTAB-3610_matrix_probe.csv s3://", bucket, "/", folder))
